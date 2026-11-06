@@ -1,0 +1,49 @@
+name: Verify Version Copy
+on:
+  push:
+    branches: [main]
+    paths:
+      - MIGRATION.json
+      - .github/workflows/migration-validation.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify copied source, assets and executable modes
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          data=json.loads(Path("MIGRATION.json").read_text())
+          index={row.split()[3]:row.split()[0] for row in subprocess.check_output(["git","ls-tree","-r","HEAD"],text=True).splitlines()}
+          expected_source=set(data["unchanged_source_files"])|set(data["intentional_changes"])
+          allowed_added={"MIGRATION.json",".github/workflows/migration-validation.yml"}
+          if len(expected_source)!=188 or set(index)!=expected_source|allowed_added:
+              raise SystemExit("Unexpected source file set after copy")
+          if data["source_commit"]!="0e2f4e9b4aafd46a73ede9622378f423f861b0f0":
+              raise SystemExit("Unexpected source version")
+          for name,expected in data["unchanged_source_files"].items():
+              path=Path(name)
+              raw=path.read_bytes()
+              sha=hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
+              if sha!=expected["sha"] or index.get(name)!=expected["mode"]:
+                  raise SystemExit("Copied source mismatch: "+name)
+          print("Verified",len(data["unchanged_source_files"]),"unchanged source/asset files from",data["source_commit"])
+          PY
+      - name: Check required production secrets without exposing values
+        env:
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          missing=[name for name in ("TMDB_READ_TOKEN","YOUTUBE_COOKIES") if not os.environ.get(name,"").strip()]
+          if missing:
+              raise SystemExit("Missing configured production secret(s): "+", ".join(missing))
+          print("Required production secrets are configured; values were not printed.")
+          PY
