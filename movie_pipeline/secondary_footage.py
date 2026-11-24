@@ -194,6 +194,9 @@ def _download_secondary_route(film, root, primary, minimum_size, existing, slot,
     blocked = False
     stats = DiscoveryStats()
     excluded_urls = {source, *accepted_sources}
+    excluded_ids = {_primary_id(value) for value in excluded_urls} - {""}
+    excluded_ids.update(budget["rejected_sources"])
+    excluded_urls.update(f"https://www.youtube.com/watch?v={identifier}" for identifier in excluded_ids)
 
     def search(query):
         if blocked:
@@ -217,12 +220,13 @@ def _download_secondary_route(film, root, primary, minimum_size, existing, slot,
                     and re.fullmatch(r"[\w-]{11}", str(video.get("key", "")))]
     from .editorial_policy import search_queries
     for url, curated in fair_candidates(curated_urls, search_queries(film), search,
-                                        limit=MAX_METADATA, excluded=excluded_urls,
+                                        limit=metadata_limit, excluded=excluded_urls,
                                         should_stop=lambda: blocked, on_search_error=search_error):
         # Exclude a primary URL even when its saved form was a shortened watch URL.
-        if _primary_id(url) in {_primary_id(value) for value in excluded_urls}:
+        if _primary_id(url) in excluded_ids:
             continue
         stats.seen += 1
+        budget["metadata"] -= 1
         try:
             with download_access.youtube_dl(yt_dlp, common) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -270,6 +274,7 @@ def _download_secondary_route(film, root, primary, minimum_size, existing, slot,
             video = next((stream for stream in metadata.get('streams',[]) if stream.get('codec_type') == 'video'),{})
             width,height = video.get('width',0),video.get('height',0)
             if width < minimum_size[0] or height < minimum_size[1]:
+                stats.reject("download_quality")
                 budget["rejected_sources"].add(_primary_id(url))
                 continue
             if existing:
@@ -280,6 +285,7 @@ def _download_secondary_route(film, root, primary, minimum_size, existing, slot,
             else:
                 novelty = scene_novelty(primary,attempt)
             if not novelty or not novelty['distinct']:
+                stats.reject("duplicate_imagery")
                 # A different route cannot add imagery to the same video.
                 # Remember content rejections; transport failures remain retryable.
                 if novelty and novelty.get('distinct') is False:
@@ -296,6 +302,7 @@ def _download_secondary_route(film, root, primary, minimum_size, existing, slot,
             print(f"Added trailer {slot} for {film['title']} with different sampled imagery.",flush=True)
             return target
         except (yt_dlp.utils.DownloadError,PipelineError,OSError,ValueError) as exc:
+            stats.error(exc)
             if _route_blocked(exc):
                 break
         finally:
