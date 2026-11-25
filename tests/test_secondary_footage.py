@@ -258,3 +258,18 @@ def test_fallback_skips_content_rejections_but_can_try_next_distinct_source(monk
     assert result.read_text() == third
     # Rejected content must not consume fallback metadata capacity a second time.
     assert inspected.count(IDS[1]) == inspected.count(IDS[2]) == 1
+
+
+def test_shortened_primary_url_does_not_spend_secondary_metadata_budget(monkeypatch, tmp_path):
+    from movie_pipeline import secondary_footage
+
+    primary, downloaded, inspected = fake_downloads(monkeypatch, tmp_path)
+    save_json(primary.with_suffix(".json"), {"source": f"https://youtu.be/{IDS[0]}"})
+    monkeypatch.setattr(secondary_footage, "MAX_METADATA", 1)
+
+    result = download_secondary(FILM, tmp_path, primary, (1920, 1080))
+
+    assert result is not None
+    assert downloaded == [IDS[1]]
+    assert inspected == [IDS[1]]
+    assert primary.read_text() == "primary"
